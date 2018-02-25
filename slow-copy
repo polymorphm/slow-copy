@@ -349,7 +349,13 @@ def main():
                         os.close(item.dst_fd)
                 
                 if args.verbose:
-                    info_handler(None, 'final flushing tree...')
+                    info_handler(
+                        None,
+                        'final flushing tree ({!r} MB, {!r} descriptors)...'.format(
+                            ceil_to_mega(copy_ctx.copied_size),
+                            len(copy_ctx.fd_list) + 1,
+                        ),
+                    )
                 
                 flush_tree(copy_ctx)
                 
