@@ -21,7 +21,7 @@ it **slowly** ;-) !
 Status
 ------
 
-Release ``slow-copy-0.1.6``.
+Release ``slow-copy-0.1.7``.
 
 Usage Example
 -------------
