@@ -175,7 +175,7 @@ def copy_tree(copy_ctx, stack, warn_handler=None, info_handler=None):
             )
             copied = 0
             clock_time = time.monotonic()
-            clock_copied = copy_ctx.copied_size
+            clock_copied = 0
             clock_prev_time = clock_time
             clock_prev_copied = clock_copied
             
