@@ -137,14 +137,21 @@ def copy_tree(copy_ctx, stack, warn_handler=None, info_handler=None):
                 info_handler(curr.dst_path, 'recreation sym-link...')
             
             link_content = os.readlink(curr.name, dir_fd=curr.src_dir_fd)
-            os.symlink(link_content, curr.name, dir_fd=curr.dst_dir_fd)
+            os.symlink(link_content, curr.swp_name, dir_fd=curr.dst_dir_fd)
             
             copy_lnk_meta(
                 curr.stat_res,
-                curr.name,
+                curr.swp_name,
                 warn_handler,
                 curr.dst_path,
                 curr.dst_dir_fd,
+            )
+            
+            os.rename(
+                curr.swp_name,
+                curr.name,
+                src_dir_fd=curr.dst_dir_fd,
+                dst_dir_fd=curr.dst_dir_fd,
             )
             
             if info_handler is not None:
