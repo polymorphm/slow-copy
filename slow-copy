@@ -2,7 +2,6 @@
 # -*- mode: python; coding: utf-8 -*-
 
 import argparse
-import collections
 import sys
 import os, os.path
 import stat
