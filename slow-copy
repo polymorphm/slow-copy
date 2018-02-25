@@ -331,6 +331,23 @@ def main():
                         info_handler=info_handler if args.verbose else None,
                     )
             finally:
+                while stack:
+                    item = stack.pop()
+                    
+                    if item.src_fd is not None:
+                        warn_handler(item.src_fd, 'unclosed source descriptor'.format(
+                            item.src_fd
+                        ))
+                        
+                        os.close(item.src_fd)
+                    
+                    if item.dst_fd is not None:
+                        warn_handler(item.dst_fd, 'unclosed destination descriptor'.format(
+                            item.dst_fd
+                        ))
+                        
+                        os.close(item.dst_fd)
+                
                 if args.verbose:
                     info_handler(None, 'final flushing tree...')
                 
