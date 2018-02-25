@@ -21,7 +21,7 @@ it **slowly** ;-) !
 Status
 ------
 
-The developer version (the git master branch).
+Release ``slow-copy-0.1.1``.
 
 Usage Example
 -------------
