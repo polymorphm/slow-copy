@@ -275,36 +275,15 @@ def copy_tree(copy_ctx, stack, warn_handler=None, info_handler=None):
                 if info_handler is not None:
                     info_handler(curr.dst_path, 'recreation directory has been done')
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='a micro utility to make copying files slowly',
-    )
-    parser.add_argument(
-        '-v',
-        '--verbose',
-        action='store_true',
-        help='explain what is being done',
-    )
-    parser.add_argument(
-        'source',
-        help='a source file or directory path to copy',
-    )
-    parser.add_argument(
-        'destination',
-        help='a destination directory path'
-                ' in which will be recreated a copy of a source file object',
-    )
-    
-    args = parser.parse_args()
-    
+def simple_copy_tree(source, destination, warn_handler=None, info_handler=None):
     copy_ctx = CopyCtx()
     
-    name = os.path.basename(args.source)
-    src_path = args.source
-    src_dir_path = os.path.dirname(args.source)
+    name = os.path.basename(source)
+    src_path = source
+    src_dir_path = os.path.dirname(source)
     src_dir_fd = None
-    dst_path = os.path.join(args.destination, name)
-    dst_dir_path = args.destination
+    dst_path = os.path.join(destination, name)
+    dst_dir_path = destination
     dst_dir_fd = None
     
     saved_mask = os.umask(0o0077)
@@ -328,27 +307,29 @@ def main():
                         copy_ctx,
                         stack,
                         warn_handler=warn_handler,
-                        info_handler=info_handler if args.verbose else None,
+                        info_handler=info_handler,
                     )
             finally:
                 while stack:
                     item = stack.pop()
                     
                     if item.src_fd is not None:
-                        warn_handler(item.src_fd, 'unclosed source descriptor'.format(
-                            item.src_fd
-                        ))
+                        if warn_handler is not None:
+                            warn_handler(item.src_fd, 'unclosed source descriptor'.format(
+                                item.src_fd
+                            ))
                         
                         os.close(item.src_fd)
                     
                     if item.dst_fd is not None:
-                        warn_handler(item.dst_fd, 'unclosed destination descriptor'.format(
-                            item.dst_fd
-                        ))
+                        if warn_handler is not None:
+                            warn_handler(item.dst_fd, 'unclosed destination descriptor'.format(
+                                item.dst_fd
+                            ))
                         
                         os.close(item.dst_fd)
                 
-                if args.verbose:
+                if info_handler is not None:
                     info_handler(
                         None,
                         'final flushing tree ({!r} MB, {!r} descriptors)...'.format(
@@ -359,7 +340,7 @@ def main():
                 
                 flush_tree(copy_ctx)
                 
-                if args.verbose:
+                if info_handler is not None:
                     info_handler(None, 'final flushing tree has been done')
         finally:
             if src_dir_fd is not None:
@@ -369,6 +350,35 @@ def main():
                 os.close(dst_dir_fd)
     finally:
         os.umask(saved_mask)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='a micro utility to make copying files slowly',
+    )
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        help='explain what is being done',
+    )
+    parser.add_argument(
+        'source',
+        help='a source file or directory path to copy',
+    )
+    parser.add_argument(
+        'destination',
+        help='a destination directory path'
+                ' in which will be recreated a copy of a source file object',
+    )
+    
+    args = parser.parse_args()
+    
+    simple_copy_tree(
+        args.source,
+        args.destination,
+        warn_handler=warn_handler,
+        info_handler=info_handler if args.verbose else None,
+    )
 
 if __name__ == '__main__':
     main()
