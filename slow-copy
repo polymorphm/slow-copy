@@ -340,7 +340,7 @@ def simple_copy_tree(source, destination, warn_handler=None, info_handler=None):
                         None,
                         'final flushing tree ({!r} MB, {!r} descriptors)...'.format(
                             ceil_to_mega(copy_ctx.copied_size),
-                            len(copy_ctx.fd_list) + 1,
+                            len(copy_ctx.fd_list),
                         ),
                     )
                 
