@@ -1,0 +1,351 @@
+#!/usr/bin/python
+# -*- mode: python; coding: utf-8 -*-
+
+import argparse
+import collections
+import sys
+import os, os.path
+import stat
+import random
+import math
+import time
+
+FLUSH_EVERY_SIZE = 67108864
+FLUSH_EVERY_FDS = 128
+
+class CopyCtx:
+    def __init__(self):
+        self.copied_size = 0
+        self.fd_list = []
+
+class StackItem:
+     def __init__(self):
+        self.name = None
+        self.swp_name = None
+        self.src_path = None
+        self.src_dir_fd = None
+        self.src_fd = None
+        self.dst_path = None
+        self.dst_dir_fd = None
+        self.dst_fd = None
+        self.stat_res = None
+        self.next_name_list = None
+
+def ceil_to_mega(b):
+    return math.ceil(b / 1000) / 1000
+
+def warn_handler(path, msg):
+    try:
+        print('WARNING: {!r}: {}'.format(path, msg), file=sys.stderr, flush=True)        
+    except OSError:
+        pass
+
+def info_handler(path, msg):
+    try:
+        if path is not None:
+            print('{!r}: {}'.format(path, msg), file=sys.stderr, flush=True)
+        else:
+            print(msg, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+def flush_tree(copy_ctx):
+    while copy_ctx.fd_list:
+        fd = copy_ctx.fd_list.pop()
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    
+    copy_ctx.copied_size = 0
+
+def copy_meta(stat_res, fd, warn_handler, dst_path):
+    mode = stat.S_IMODE(stat_res.st_mode)
+    mtime_ns = stat_res.st_mtime_ns
+    
+    try:
+        os.chmod(fd, mode)
+    except OSError as e:
+        if warn_handler is not None:
+            warn_handler(dst_path, 'setting mode attribute error: {!r}'.format(
+                str(e)
+            ))
+    
+    try:
+        os.utime(fd, ns=(mtime_ns, mtime_ns))
+    except OSError as e:
+        if warn_handler is not None:
+            warn_handler(dst_path, 'setting mtime_ns attribute error: {!r}'.format(
+                str(e)
+            ))
+
+def copy_lnk_meta(stat_res, fd, warn_handler, dst_path, dir_fd):
+    mtime_ns = stat_res.st_mtime_ns
+    
+    try:
+        os.utime(fd, ns=(mtime_ns, mtime_ns), dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as e:
+        if warn_handler is not None:
+            warn_handler(dst_path, 'setting mtime_ns sym-link attribute error: {!r}'.format(
+                str(e)
+            ))
+
+def copy_tree(copy_ctx, stack, warn_handler=None, info_handler=None):
+    pid = os.getpid()
+    rnd = random.randrange(1000000, 10000000)
+    
+    while stack:
+        if len(copy_ctx.fd_list) >= FLUSH_EVERY_FDS:
+            if info_handler is not None:
+                info_handler(
+                    None,
+                    'flushing tree ({!r} MB, {!r} descriptors)...'.format(
+                        ceil_to_mega(copy_ctx.copied_size),
+                        len(copy_ctx.fd_list),
+                    ),
+                )
+            
+            flush_tree(copy_ctx)
+            
+            if info_handler is not None:
+                info_handler(None, 'flushing tree has been done')
+        
+        curr = stack[len(stack) - 1]
+        
+        if curr.swp_name is None:
+            curr.swp_name = '{}.{}-{}.swp'.format(curr.name, pid, rnd)
+        
+        if curr.src_fd is None:
+            try:
+                curr.src_fd = os.open(
+                    curr.name,
+                    os.O_NOFOLLOW,
+                    dir_fd=curr.src_dir_fd,
+                )
+            except OSError:
+                curr.src_fd = os.open(
+                    curr.name,
+                    os.O_NOFOLLOW | os.O_PATH,
+                    dir_fd=curr.src_dir_fd,
+                )
+        
+        if curr.stat_res is None:
+            curr.stat_res = os.stat(curr.src_fd)
+        
+        if stat.S_ISLNK(curr.stat_res.st_mode):
+            if info_handler is not None:
+                info_handler(curr.dst_path, 'recreation sym-link...')
+            
+            link_content = os.readlink(curr.name, dir_fd=curr.src_dir_fd)
+            os.symlink(link_content, curr.name, dir_fd=curr.dst_dir_fd)
+            
+            copy_lnk_meta(
+                curr.stat_res,
+                curr.name,
+                warn_handler,
+                curr.dst_path,
+                curr.dst_dir_fd,
+            )
+            
+            if info_handler is not None:
+                info_handler(curr.dst_path, 'recreation sym-link has been done')
+            
+            os.close(curr.src_fd)
+            stack.pop()
+        
+        if stat.S_ISREG(curr.stat_res.st_mode):
+            if info_handler is not None:
+                info_handler(
+                    curr.dst_path, 'recreation reg-file ({!r} MB)...'.format(
+                        ceil_to_mega(curr.stat_res.st_size),
+                    ),
+                )
+            
+            fd = os.open(
+                curr.swp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW,
+                dir_fd=curr.dst_dir_fd,
+            )
+            copied = 0
+            clock_time = time.monotonic()
+            clock_copied = copy_ctx.copied_size
+            clock_prev_time = clock_time
+            clock_prev_copied = clock_copied
+            
+            while True:
+                if copy_ctx.copied_size >= FLUSH_EVERY_SIZE:
+                    if info_handler is not None:
+                        info_handler(
+                            curr.dst_path,
+                            'flushing ({!r} MB, {!r} descriptors)...'.format(
+                                ceil_to_mega(copy_ctx.copied_size),
+                                len(copy_ctx.fd_list) + 1,
+                            ),
+                        )
+                    
+                    os.fsync(fd)
+                    flush_tree(copy_ctx)
+                    clock_time = time.monotonic()
+                    
+                    if info_handler is not None:
+                        info_handler(curr.dst_path, 'flushing has been done')
+                        info_handler(
+                            curr.dst_path,
+                            '{!r} MB copied, {!r} MB/s'.format(
+                                ceil_to_mega(copied),
+                                ceil_to_mega(
+                                    (clock_copied - clock_prev_copied)
+                                    / (clock_time - clock_prev_time)
+                                ),
+                            ),
+                        )
+                    
+                    clock_prev_time = clock_time
+                    clock_prev_copied = clock_copied
+                
+                l = os.sendfile(fd, curr.src_fd, None, FLUSH_EVERY_SIZE)
+                
+                if l:
+                    copied += l
+                    copy_ctx.copied_size += l
+                    clock_copied += l
+                else:
+                    break
+            
+            copy_meta(curr.stat_res, fd, warn_handler, curr.dst_path)
+            
+            os.rename(
+                curr.swp_name,
+                curr.name,
+                src_dir_fd=curr.dst_dir_fd,
+                dst_dir_fd=curr.dst_dir_fd,
+            )
+            
+            if info_handler is not None:
+                info_handler(curr.dst_path, 'recreation reg-file has been done')
+            
+            os.close(curr.src_fd)
+            copy_ctx.fd_list.append(fd)
+            stack.pop()
+        
+        if stat.S_ISDIR(curr.stat_res.st_mode):
+            if curr.next_name_list is None:
+                if info_handler is not None:
+                    info_handler(curr.dst_path, 'recreation directory...')
+                
+                curr.next_name_list = os.listdir(curr.src_fd)
+            
+            if curr.dst_fd is None:
+                os.mkdir(curr.swp_name, dir_fd=curr.dst_dir_fd)
+                
+                curr.dst_fd = os.open(
+                    curr.swp_name,
+                    os.O_NOFOLLOW,
+                    dir_fd=curr.dst_dir_fd,
+                )
+            
+            if curr.next_name_list:
+                next_name = curr.next_name_list.pop(0)
+                next_src_path = os.path.join(curr.src_path, next_name)
+                next_dst_path = os.path.join(curr.dst_path, next_name)
+                
+                next_item = StackItem()
+                
+                next_item.name = next_name
+                next_item.src_path = next_src_path
+                next_item.src_dir_fd = curr.src_fd
+                next_item.dst_path = next_dst_path
+                next_item.dst_dir_fd = curr.dst_fd
+                
+                stack.append(next_item)
+            else:
+                copy_meta(curr.stat_res, curr.dst_fd, warn_handler, curr.dst_path)
+                
+                os.rename(
+                    curr.swp_name,
+                    curr.name,
+                    src_dir_fd=curr.dst_dir_fd,
+                    dst_dir_fd=curr.dst_dir_fd,
+                )
+                
+                os.close(curr.src_fd)
+                copy_ctx.fd_list.append(curr.dst_fd)
+                stack.pop()
+                
+                if info_handler is not None:
+                    info_handler(curr.dst_path, 'recreation directory has been done')
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='a micro utility to make copying files slowly',
+    )
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        help='explain what is being done',
+    )
+    parser.add_argument(
+        'source',
+        help='a source file or directory path to copy',
+    )
+    parser.add_argument(
+        'destination',
+        help='a destination directory path'
+                ' in which will be recreated a copy of a source file object',
+    )
+    
+    args = parser.parse_args()
+    
+    copy_ctx = CopyCtx()
+    
+    name = os.path.basename(args.source)
+    src_path = args.source
+    src_dir_path = os.path.dirname(args.source)
+    src_dir_fd = None
+    dst_path = os.path.join(args.destination, name)
+    dst_dir_path = args.destination
+    dst_dir_fd = None
+    
+    saved_mask = os.umask(0o0077)
+    try:
+        try:
+            src_dir_fd = os.open(src_dir_path, 0)
+            dst_dir_fd = os.open(dst_dir_path, 0)
+            
+            bootstrap_item = StackItem()
+            
+            bootstrap_item.name = name
+            bootstrap_item.src_path = src_path
+            bootstrap_item.src_dir_fd = src_dir_fd
+            bootstrap_item.dst_path = dst_path
+            bootstrap_item.dst_dir_fd = dst_dir_fd
+            
+            stack = [bootstrap_item]
+            
+            try:
+                copy_tree(
+                        copy_ctx,
+                        stack,
+                        warn_handler=warn_handler,
+                        info_handler=info_handler if args.verbose else None,
+                    )
+            finally:
+                if args.verbose:
+                    info_handler(None, 'final flushing tree...')
+                
+                flush_tree(copy_ctx)
+                
+                if args.verbose:
+                    info_handler(None, 'final flushing tree has been done')
+        finally:
+            if src_dir_fd is not None:
+                os.close(src_dir_fd)
+            
+            if dst_dir_fd is not None:
+                os.close(dst_dir_fd)
+    finally:
+        os.umask(saved_mask)
+
+if __name__ == '__main__':
+    main()
